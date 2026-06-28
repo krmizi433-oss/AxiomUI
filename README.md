@@ -19,7 +19,7 @@ local lib = getgenv().AxiomUI
 
 ## 🎨 Themes
 
-Three built-in themes. Pass the name string to `CreateWindow`.
+Three built-in themes. Pass the name string to `CreateWindow`. You can also pass a **full custom color table** instead of a name.
 
 | Name | Accent Color |
 |------|-------------|
@@ -27,19 +27,49 @@ Three built-in themes. Pass the name string to `CreateWindow`.
 | `Midnight` | Sky Blue `#38BDF8` |
 | `Crimson` | Red `#DC3250` |
 
+**Custom theme:**
+```lua
+local Window = lib:CreateWindow({
+    Theme = {
+        Background   = Color3.fromRGB(10, 10, 10),
+        Topbar       = Color3.fromRGB(18, 18, 18),
+        TabBar       = Color3.fromRGB(14, 14, 14),
+        TabActive    = Color3.fromRGB(0, 200, 100),
+        TabInactive  = Color3.fromRGB(28, 28, 28),
+        Section      = Color3.fromRGB(20, 20, 20),
+        Element      = Color3.fromRGB(26, 26, 26),
+        ElementHover = Color3.fromRGB(36, 36, 36),
+        Accent       = Color3.fromRGB(0, 200, 100),
+        AccentDim    = Color3.fromRGB(0, 140, 70),
+        Text         = Color3.fromRGB(230, 230, 230),
+        SubText      = Color3.fromRGB(120, 120, 120),
+        Border       = Color3.fromRGB(40, 40, 40),
+        Slider       = Color3.fromRGB(0, 200, 100),
+        SliderBg     = Color3.fromRGB(38, 38, 38),
+        Toggle       = Color3.fromRGB(0, 200, 100),
+        ToggleOff    = Color3.fromRGB(50, 50, 50),
+        Notify       = Color3.fromRGB(18, 18, 18),
+        NotifyBorder = Color3.fromRGB(0, 200, 100),
+        Close        = Color3.fromRGB(232, 72, 85),
+        Minimize     = Color3.fromRGB(255, 189, 46),
+        Maximize     = Color3.fromRGB(52, 199, 89),
+    },
+})
+```
+
 ---
 
 ## 🪟 Creating a Window
 
 ```lua
-local Window = AxiomUI:CreateWindow({
+local Window = lib:CreateWindow({
     Title     = "My Hub",
     SubTitle  = "v1.0",            -- optional subtitle under title
-    Theme     = "Dark",            -- "Dark" | "Midnight" | "Crimson"
+    Theme     = "Dark",            -- "Dark" | "Midnight" | "Crimson" | custom table
     Size      = UDim2.new(0, 580, 0, 430),
     Position  = UDim2.new(0.5, -290, 0.5, -215),
     Icon      = "◈",               -- any UTF-8 glyph or emoji
-    ToggleKey = Enum.KeyCode.RightShift,  -- key to show/hide window
+    ToggleKey = Enum.KeyCode.RightShift,
 })
 ```
 
@@ -48,8 +78,44 @@ local Window = AxiomUI:CreateWindow({
 | Method | Description |
 |--------|-------------|
 | `Window:Notify(opts)` | Fire a toast notification |
-| `Window:SetTheme(name)` | Swap theme at runtime |
+| `Window:SetTheme(name)` | Swap theme at runtime (name string or custom table) |
+| `Window:SetTitle(str)` | Update the window title text at runtime |
+| `Window:GetFlag(key)` | Read a flag value from `getgenv()` |
+| `Window:SetFlag(key, val)` | Write a flag and call `:Set()` on the matching element |
+| `Window:SaveConfig(name)` | Serialize all flag values to `name.json` via `writefile` |
+| `Window:LoadConfig(name)` | Read `name.json` and restore all element states via `:Set()` |
+| `Window:ResetConfig()` | Reset every element to its `Default` value |
+| `Window:CreateWatermark(opts)` | Spawn a persistent always-on-top label |
 | `Window:Destroy()` | Remove the window and notify layer |
+
+---
+
+## 💧 Watermark
+
+A small always-visible label pinned to the screen. Optionally shows live FPS.
+
+```lua
+local WM = Window:CreateWatermark({
+    Text     = "MyHub v1.0",
+    Position = UDim2.new(0, 8, 0, 8),   -- optional, defaults to top-left
+    ShowFPS  = true,                     -- optional, appends "  |  XX FPS"
+})
+
+WM:SetText("MyHub v2.0")   -- update label text
+WM:Destroy()               -- remove watermark
+```
+
+---
+
+## 💾 Config Save / Load
+
+All elements with a `Flag` are included automatically. Booleans, numbers, strings, and Color3 values are supported. Requires `writefile` / `readfile` — available in most executors.
+
+```lua
+Window:SaveConfig("my_hub")    -- writes my_hub.json
+Window:LoadConfig("my_hub")    -- reads my_hub.json and restores all states
+Window:ResetConfig()           -- resets every element to its Default
+```
 
 ---
 
@@ -64,17 +130,37 @@ local Tab = Window:CreateTab({
 })
 ```
 
+### Tab Methods
+
+| Method | Description |
+|--------|-------------|
+| `Tab:SetVisible(bool)` | Show or hide the tab button from the sidebar |
+| `Tab:SetBadge(str)` | Show a small badge label on the tab button — pass `""` to clear |
+
+```lua
+Tab:SetBadge("NEW")     -- shows a pill badge on the tab
+Tab:SetBadge("")        -- clears it
+Tab:SetVisible(false)   -- hides the tab from the sidebar
+```
+
 ---
 
 ## 📁 Sections
 
-Sections are labeled containers inside a tab. Add all elements into a section.
+Sections are labeled containers inside a tab.
 
 ```lua
 local Section = Tab:CreateSection({
     Name = "Settings",
 })
 ```
+
+### Section Methods
+
+| Method | Description |
+|--------|-------------|
+| `Section:SetVisible(bool)` | Show or hide the entire section |
+| `Section:Destroy()` | Remove the section and all its elements |
 
 ---
 
@@ -111,13 +197,13 @@ local MyToggle = Section:AddToggle({
     Name        = "God Mode",
     Description = "Enables god mode",   -- optional
     Default     = false,
-    Flag        = "GodMode",            -- getgenv().GodMode updated live
+    Flag        = "GodMode",
     Callback    = function(value)
         -- value is true or false
     end,
 })
 
-MyToggle:Set(true)   -- set programmatically
+MyToggle:Set(true)
 MyToggle:Get()       -- returns current boolean
 ```
 
@@ -134,7 +220,7 @@ local MySlider = Section:AddSlider({
     Min         = 0,
     Max         = 500,
     Default     = 16,
-    Suffix      = " studs",   -- appended to displayed value
+    Suffix      = " studs",
     Flag        = "WalkSpeed",
     Callback    = function(value)
         -- value is a number between Min and Max
@@ -173,7 +259,7 @@ MyDropdown:RemoveOption("Custom") -- remove an option at runtime
 
 ### ✏️ Textbox
 
-Text input field. Callback fires on `FocusLost`.
+Text input. Callback fires on `FocusLost`.
 
 ```lua
 local MyTextbox = Section:AddTextbox({
@@ -182,12 +268,33 @@ local MyTextbox = Section:AddTextbox({
     Default     = "",
     Flag        = "TargetName",
     Callback    = function(text)
-        -- text is the current string value
+        -- fires when the user clicks away
     end,
 })
 
 MyTextbox:Set("PlayerName")
 MyTextbox:Get()   -- returns current string
+```
+
+---
+
+### 🔤 Input (Live)
+
+Same as Textbox but the callback fires **on every keystroke** — useful for live search, filters, or real-time updates.
+
+```lua
+local MyInput = Section:AddInput({
+    Name        = "Search Player",
+    Placeholder = "Type to filter...",
+    Default     = "",
+    Flag        = "SearchQuery",
+    Callback    = function(text)
+        -- fires on every character change
+    end,
+})
+
+MyInput:Set("hello")
+MyInput:Get()   -- returns current string
 ```
 
 ---
@@ -245,7 +352,65 @@ local MyLabel = Section:AddLabel("Status: Active", {
     Color = Color3.fromRGB(99, 102, 241),      -- optional
 })
 
-MyLabel:Set("Status: Inactive")   -- update text at any time
+MyLabel:Set("Status: Inactive")
+```
+
+---
+
+### 📝 Paragraph
+
+Title + body text block. Better structured than a Label for longer descriptions or changelogs.
+
+```lua
+local MyPara = Section:AddParagraph({
+    Title   = "About",
+    Content = "This hub was built for educational purposes only. Use responsibly.",
+})
+
+MyPara:SetTitle("Updated")
+MyPara:SetContent("New version loaded.")
+```
+
+---
+
+### 📊 Progress Bar
+
+Read-only animated fill bar. Use `:Set()` to update the value programmatically — no user drag.
+
+```lua
+local MyBar = Section:AddProgressBar({
+    Name    = "Health",
+    Default = 100,     -- 0 to 100
+    Suffix  = "%",     -- appended to displayed value
+    Flag    = "HPBar",
+})
+
+MyBar:Set(72)    -- animates fill to 72%
+MyBar:Get()      -- returns current number
+```
+
+---
+
+### 📋 Table
+
+Two-column key/value display with alternating row shading. Good for stat panels and info readouts.
+
+```lua
+local MyTable = Section:AddTable({
+    Name = "Stats",
+    Rows = {
+        {"Walk Speed", "16"},
+        {"Jump Power", "50"},
+        {"Health",     "100"},
+    },
+})
+
+MyTable:SetRows({
+    {"Walk Speed", "250"},
+    {"Jump Power", "100"},
+})
+
+MyTable:UpdateRow(1, "Walk Speed", "500")  -- update a single row by index
 ```
 
 ---
@@ -262,7 +427,7 @@ Section:AddSeparator()
 
 ## 🔔 Notifications
 
-Fire toast notifications from anywhere using the Window reference.
+Fire toast notifications from anywhere using the Window reference. Up to **4 toasts** display simultaneously — overflow queues automatically and drains as slots free.
 
 ```lua
 Window:Notify({
@@ -289,13 +454,14 @@ local lib = getgenv().AxiomUI
 
 local Window = lib:CreateWindow({
     Title     = "My Hub",
-    SubTitle  = "v1.0",
+    SubTitle  = "v3.0",
     Theme     = "Midnight",
     ToggleKey = Enum.KeyCode.RightShift,
 })
 
-local Tab = Window:CreateTab({ Name = "Player", Icon = "👤" })
+local WM = Window:CreateWatermark({ Text = "My Hub v3.0", ShowFPS = true })
 
+local Tab     = Window:CreateTab({ Name = "Player", Icon = "👤" })
 local Section = Tab:CreateSection({ Name = "Movement" })
 
 local SpeedSlider = Section:AddSlider({
@@ -311,9 +477,9 @@ local SpeedSlider = Section:AddSlider({
 })
 
 Section:AddToggle({
-    Name    = "Infinite Jump",
-    Default = false,
-    Flag    = "InfJump",
+    Name     = "Infinite Jump",
+    Default  = false,
+    Flag     = "InfJump",
     Callback = function(enabled)
         -- your infinite jump logic
     end,
@@ -321,10 +487,36 @@ Section:AddToggle({
 
 Section:AddSeparator()
 
+local StatsSection = Tab:CreateSection({ Name = "Info" })
+
+local StatsTable = StatsSection:AddTable({
+    Name = "Character Stats",
+    Rows = {
+        {"Walk Speed", "16"},
+        {"Jump Power", "50"},
+        {"Health",     "100"},
+    },
+})
+
+local HPBar = StatsSection:AddProgressBar({
+    Name    = "Health",
+    Default = 100,
+    Suffix  = "%",
+})
+
 Section:AddButton({
-    Name     = "Reset Character",
+    Name     = "Save Config",
     Callback = function()
-        game.Players.LocalPlayer.Character.Humanoid.Health = 0
+        Window:SaveConfig("my_hub")
+        Window:Notify({ Title = "Saved", Icon = "✓", Duration = 2 })
+    end,
+})
+
+Section:AddButton({
+    Name     = "Load Config",
+    Callback = function()
+        Window:LoadConfig("my_hub")
+        Window:Notify({ Title = "Loaded", Icon = "✓", Duration = 2 })
     end,
 })
 
@@ -341,8 +533,8 @@ Window:Notify({
 ## 🗑️ Cleanup
 
 ```lua
-AxiomUI:Destroy()   -- removes all AxiomUI windows and the notify layer
-Window:Destroy()    -- removes only this specific window
+lib:Destroy()          -- removes all AxiomUI windows and the notify layer
+Window:Destroy()       -- removes only this specific window
 ```
 
 ---
