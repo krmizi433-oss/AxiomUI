@@ -196,6 +196,9 @@ end
 -- ── NOTIFY SYSTEM ─────────────────────────────────────────────
 local _notifySg    = nil
 local _notifyCont  = nil
+local _notifyQueue  = {}
+local _notifyActive = 0
+local NOTIFY_MAX    = 4
 
 local function ensureNotify(theme)
 	if _notifySg and _notifySg.Parent then return end
@@ -215,14 +218,14 @@ local function ensureNotify(theme)
 	list(_notifyCont, Enum.FillDirection.Vertical, 8)
 end
 
-local function Notify(opts, theme)
-	opts = opts or {}
+local function _showNotif(opts, theme)
 	local title    = opts.Title       or "Notification"
 	local desc     = opts.Description or ""
 	local duration = opts.Duration    or 4
 	local nIcon    = opts.Icon        or "●"
 
 	ensureNotify(theme)
+	_notifyActive += 1
 
 	local frame                     = Instance.new("Frame")
 	frame.Name                      = "Notif"
@@ -276,7 +279,6 @@ local function Notify(opts, theme)
 		dl.Parent                   = inner
 	end
 
-	-- progress drain
 	local prog                  = Instance.new("Frame")
 	prog.Size                   = UDim2.new(1, -14, 0, 2)
 	prog.Position               = UDim2.new(0, 14, 1, -2)
@@ -290,8 +292,24 @@ local function Notify(opts, theme)
 
 	task.delay(duration, function()
 		tw(frame, {BackgroundTransparency = 1}, 0.25)
-		task.delay(0.3, function() if frame then frame:Destroy() end end)
+		task.delay(0.3, function()
+			if frame then frame:Destroy() end
+			_notifyActive -= 1
+			if #_notifyQueue > 0 then
+				local nxt = table.remove(_notifyQueue, 1)
+				_showNotif(nxt.opts, nxt.theme)
+			end
+		end)
 	end)
+end
+
+local function Notify(opts, theme)
+	opts = opts or {}
+	if _notifyActive < NOTIFY_MAX then
+		_showNotif(opts, theme)
+	else
+		table.insert(_notifyQueue, {opts = opts, theme = theme})
+	end
 end
 
 -- ── KEYBIND MANAGER ──────────────────────────────────────────
@@ -310,7 +328,7 @@ function AxiomUI:CreateWindow(opts)
 	local wIcon      = opts.Icon     or "◈"
 	local toggleKey  = opts.ToggleKey or Enum.KeyCode.RightShift
 
-	local theme = Themes[themeName] or Themes.Dark
+	local theme = (type(opts.Theme) == "table" and opts.Theme) or Themes[themeName] or Themes.Dark
 
 	-- ── ScreenGui (executor-safe parent) ──────────────────────
 	local sg              = Instance.new("ScreenGui")
@@ -563,6 +581,9 @@ function AxiomUI:CreateWindow(opts)
 	-- ── Window object ─────────────────────────────────────────
 	local Window = {_theme = theme, _sg = sg, _win = win}
 
+	-- registered elements for config system: {flag, obj, default}
+	local _flagRegistry = {}
+
 	function Window:Notify(o)
 		Notify(o, theme)
 	end
@@ -573,8 +594,114 @@ function AxiomUI:CreateWindow(opts)
 	end
 
 	function Window:SetTheme(name)
-		-- Runtime theme swap — rebuilds colors across all live instances
-		theme = Themes[name] or theme
+		theme = (type(name) == "table" and name) or Themes[name] or theme
+	end
+
+	function Window:SetTitle(str)
+		if titleLbl then titleLbl.Text = str end
+	end
+
+	function Window:GetFlag(key)
+		return getgenv()[key]
+	end
+
+	function Window:SetFlag(key, val)
+		getgenv()[key] = val
+		for _, reg in ipairs(_flagRegistry) do
+			if reg.flag == key and reg.obj and reg.obj.Set then
+				reg.obj:Set(val)
+			end
+		end
+	end
+
+	function Window:SaveConfig(name)
+		local data = {}
+		for _, reg in ipairs(_flagRegistry) do
+			if reg.flag then
+				local v = getgenv()[reg.flag]
+				if type(v) == "boolean" or type(v) == "number" or type(v) == "string" then
+					data[reg.flag] = v
+				elseif type(v) == "userdata" and v.R then
+					data[reg.flag] = {r = v.R, g = v.G, b = v.B}
+				end
+			end
+		end
+		local ok, svc = pcall(function() return game:GetService("HttpService") end)
+		if ok then
+			local json = svc:JSONEncode(data)
+			pcall(writefile, (name or "axiom_config") .. ".json", json)
+		end
+	end
+
+	function Window:LoadConfig(name)
+		local ok, content = pcall(readfile, (name or "axiom_config") .. ".json")
+		if not ok or not content then return end
+		local svc = game:GetService("HttpService")
+		local ok2, data = pcall(function() return svc:JSONDecode(content) end)
+		if not ok2 or type(data) ~= "table" then return end
+		for _, reg in ipairs(_flagRegistry) do
+			if reg.flag and data[reg.flag] ~= nil then
+				local v = data[reg.flag]
+				if type(v) == "table" and v.r then
+					v = Color3.fromRGB(v.r * 255, v.g * 255, v.b * 255)
+				end
+				if reg.obj and reg.obj.Set then reg.obj:Set(v) end
+			end
+		end
+	end
+
+	function Window:ResetConfig()
+		for _, reg in ipairs(_flagRegistry) do
+			if reg.obj and reg.obj.Set and reg.default ~= nil then
+				reg.obj:Set(reg.default)
+			end
+		end
+	end
+
+	function Window:CreateWatermark(opts)
+		opts = opts or {}
+		local wText = opts.Text or title
+		local wPos  = opts.Position or UDim2.new(0, 8, 0, 8)
+
+		local wmSg              = Instance.new("ScreenGui")
+		wmSg.Name               = "AxiomWatermark"
+		wmSg.ResetOnSpawn       = false
+		wmSg.DisplayOrder       = 9998
+		wmSg.IgnoreGuiInset     = true
+		wmSg.Parent             = GUI_PARENT
+
+		local wmFrame               = Instance.new("Frame")
+		wmFrame.Size               = UDim2.new(0, 0, 0, 28)
+		wmFrame.Position           = wPos
+		wmFrame.BackgroundColor3   = theme.Topbar
+		wmFrame.AutomaticSize      = Enum.AutomaticSize.X
+		wmFrame.Parent             = wmSg
+		corner(wmFrame, 7)
+		stroke(wmFrame, theme.Border, 1)
+		pad(wmFrame, 6, 12, 6, 12)
+
+		local wmLbl                 = Instance.new("TextLabel")
+		wmLbl.Size                 = UDim2.new(0, 0, 1, 0)
+		wmLbl.AutomaticSize        = Enum.AutomaticSize.X
+		wmLbl.BackgroundTransparency = 1
+		wmLbl.Text                 = wText
+		wmLbl.Font                 = Enum.Font.GothamBold
+		wmLbl.TextSize             = 12
+		wmLbl.TextColor3           = theme.Text
+		wmLbl.Parent               = wmFrame
+
+		-- FPS counter update
+		if opts.ShowFPS then
+			RunService.Heartbeat:Connect(function()
+				local fps = math.floor(1 / RunService.Heartbeat:Wait() + 0.5)
+				wmLbl.Text = wText .. "  |  " .. fps .. " FPS"
+			end)
+		end
+
+		local WM = {}
+		function WM:SetText(t) wText = t; wmLbl.Text = t end
+		function WM:Destroy() wmSg:Destroy() end
+		return WM
 	end
 
 	-- ── CREATE TAB ────────────────────────────────────────────
@@ -694,6 +821,41 @@ function AxiomUI:CreateWindow(opts)
 
 		table.insert(tabs, Tab)
 		if #tabs == 1 then activate() end
+
+		function Tab:SetVisible(v)
+			tBtn.Visible = v
+			if not v and activeTab == Tab then
+				for _, t in ipairs(tabs) do
+					if t ~= Tab and t._page then
+						t._page.Visible = true
+						activeTab = t
+						break
+					end
+				end
+				page.Visible = false
+			end
+		end
+
+		function Tab:SetBadge(text)
+			local existing = tBtn:FindFirstChild("Badge")
+			if existing then existing:Destroy() end
+			if not text or text == "" then return end
+			local badge               = Instance.new("TextLabel")
+			badge.Name               = "Badge"
+			badge.Size               = UDim2.new(0, 0, 0, 16)
+			badge.AutomaticSize      = Enum.AutomaticSize.X
+			badge.Position           = UDim2.new(1, -4, 0, 4)
+			badge.AnchorPoint        = Vector2.new(1, 0)
+			badge.BackgroundColor3   = theme.Accent
+			badge.Text               = text
+			badge.Font               = Enum.Font.GothamBold
+			badge.TextSize           = 9
+			badge.TextColor3         = Color3.fromRGB(255, 255, 255)
+			badge.ZIndex             = 6
+			badge.Parent             = tBtn
+			corner(badge, 4)
+			pad(badge, 2, 5, 2, 5)
+		end
 
 		-- ── CREATE SECTION ────────────────────────────────────
 		function Tab:CreateSection(sOpts)
@@ -1593,6 +1755,288 @@ function AxiomUI:CreateWindow(opts)
 				sep.LayoutOrder         = nlo()
 				sep.Parent              = si
 				return sep
+			end
+
+			-- ── PARAGRAPH ──────────────────────────────────────────
+			function S:AddParagraph(o)
+				o = o or {}
+				local heading = o.Title or ""
+				local body    = o.Content or o.Body or ""
+
+				local e                   = Instance.new("Frame")
+				e.Name                    = "Para"
+				e.Size                    = UDim2.new(1, 0, 0, 0)
+				e.AutomaticSize           = Enum.AutomaticSize.Y
+				e.BackgroundColor3        = theme.Element
+				e.LayoutOrder             = nlo()
+				e.Parent                  = si
+				corner(e, 7)
+				stroke(e, theme.Border, 1)
+				pad(e, 10, 12, 10, 12)
+
+				local innerP              = Instance.new("Frame")
+				innerP.Size               = UDim2.new(1, 0, 1, 0)
+				innerP.AutomaticSize      = Enum.AutomaticSize.Y
+				innerP.BackgroundTransparency = 1
+				innerP.Parent             = e
+				list(innerP, Enum.FillDirection.Vertical, 4)
+
+				local hl
+				if heading ~= "" then
+					hl                    = Instance.new("TextLabel")
+					hl.Size               = UDim2.new(1, 0, 0, 0)
+					hl.AutomaticSize      = Enum.AutomaticSize.Y
+					hl.BackgroundTransparency = 1
+					hl.Text               = heading
+					hl.Font               = Enum.Font.GothamBold
+					hl.TextSize           = 13
+					hl.TextColor3         = theme.Text
+					hl.TextXAlignment     = Enum.TextXAlignment.Left
+					hl.TextWrapped        = true
+					hl.Parent             = innerP
+				end
+
+				local bl                  = Instance.new("TextLabel")
+				bl.Size                   = UDim2.new(1, 0, 0, 0)
+				bl.AutomaticSize          = Enum.AutomaticSize.Y
+				bl.BackgroundTransparency = 1
+				bl.Text                   = body
+				bl.Font                   = Enum.Font.Gotham
+				bl.TextSize               = 12
+				bl.TextColor3             = theme.SubText
+				bl.TextXAlignment         = Enum.TextXAlignment.Left
+				bl.TextWrapped            = true
+				bl.Parent                 = innerP
+
+				local P = {}
+				function P:SetTitle(t) if hl then hl.Text = t end end
+				function P:SetContent(t) bl.Text = t end
+				return P
+			end
+
+			-- ── PROGRESS BAR (read-only fill bar) ──────────────────
+			function S:AddProgressBar(o)
+				o = o or {}
+				local lbl  = o.Name    or "Progress"
+				local def  = o.Default or 0
+				local sfx  = o.Suffix  or "%"
+				local flag = o.Flag
+
+				local pv = math.clamp(def, 0, 100)
+
+				local e                   = Instance.new("Frame")
+				e.Name                    = "PB_" .. lbl
+				e.Size                    = UDim2.new(1, 0, 0, 44)
+				e.BackgroundColor3        = theme.Element
+				e.LayoutOrder             = nlo()
+				e.Parent                  = si
+				corner(e, 7)
+				stroke(e, theme.Border, 1)
+				pad(e, 8, 12, 12, 12)
+
+				local topRow              = Instance.new("Frame")
+				topRow.Size               = UDim2.new(1, 0, 0, 16)
+				topRow.BackgroundTransparency = 1
+				topRow.Parent             = e
+
+				local ll                  = Instance.new("TextLabel")
+				ll.Size                   = UDim2.new(1, -65, 1, 0)
+				ll.BackgroundTransparency = 1
+				ll.Text                   = lbl
+				ll.Font                   = Enum.Font.GothamSemibold
+				ll.TextSize               = 13
+				ll.TextColor3             = theme.Text
+				ll.TextXAlignment         = Enum.TextXAlignment.Left
+				ll.Parent                 = topRow
+
+				local vl                  = Instance.new("TextLabel")
+				vl.Size                   = UDim2.new(0, 60, 1, 0)
+				vl.Position               = UDim2.new(1, -60, 0, 0)
+				vl.BackgroundTransparency = 1
+				vl.Text                   = tostring(math.floor(pv)) .. sfx
+				vl.Font                   = Enum.Font.GothamBold
+				vl.TextSize               = 12
+				vl.TextColor3             = theme.Accent
+				vl.TextXAlignment         = Enum.TextXAlignment.Right
+				vl.Parent                 = topRow
+
+				local tr                  = Instance.new("Frame")
+				tr.Size                   = UDim2.new(1, 0, 0, 6)
+				tr.Position               = UDim2.new(0, 0, 1, -14)
+				tr.BackgroundColor3       = theme.SliderBg
+				tr.Parent                 = e
+				corner(tr, 100)
+
+				local fill                = Instance.new("Frame")
+				fill.Size                 = UDim2.new(pv / 100, 0, 1, 0)
+				fill.BackgroundColor3     = theme.Slider
+				fill.BorderSizePixel      = 0
+				fill.Parent               = tr
+				corner(fill, 100)
+
+				local PB = {}
+				function PB:Set(val)
+					pv = math.clamp(val, 0, 100)
+					tw(fill, {Size = UDim2.new(pv / 100, 0, 1, 0)}, 0.2)
+					vl.Text = tostring(math.floor(pv)) .. sfx
+					if flag then getgenv()[flag] = pv end
+				end
+				function PB:Get() return pv end
+				if flag then getgenv()[flag] = pv end
+				table.insert(allElements, {frame = e, label = lbl})
+				return PB
+			end
+
+			-- ── INPUT (live keystroke callback) ─────────────────────
+			function S:AddInput(o)
+				o = o or {}
+				local lbl  = o.Name        or "Input"
+				local ph   = o.Placeholder or "Type here..."
+				local def  = o.Default     or ""
+				local cb   = o.Callback    or function() end
+				local flag = o.Flag
+
+				local e                   = Instance.new("Frame")
+				e.Name                    = "In_" .. lbl
+				e.Size                    = UDim2.new(1, 0, 0, 56)
+				e.BackgroundColor3        = theme.Element
+				e.LayoutOrder             = nlo()
+				e.Parent                  = si
+				corner(e, 7)
+				stroke(e, theme.Border, 1)
+				pad(e, 8, 10, 8, 12)
+
+				local ll                  = Instance.new("TextLabel")
+				ll.Size                   = UDim2.new(1, 0, 0, 14)
+				ll.BackgroundTransparency = 1
+				ll.Text                   = lbl
+				ll.Font                   = Enum.Font.GothamSemibold
+				ll.TextSize               = 12
+				ll.TextColor3             = theme.SubText
+				ll.TextXAlignment         = Enum.TextXAlignment.Left
+				ll.Parent                 = e
+
+				local ibg                 = Instance.new("Frame")
+				ibg.Size                  = UDim2.new(1, 0, 0, 26)
+				ibg.Position              = UDim2.new(0, 0, 0, 18)
+				ibg.BackgroundColor3      = theme.TabBar
+				ibg.Parent                = e
+				corner(ibg, 5)
+				local ibgS = stroke(ibg, theme.Border, 1)
+
+				local box                 = Instance.new("TextBox")
+				box.Size                  = UDim2.new(1, -16, 1, 0)
+				box.Position              = UDim2.new(0, 8, 0, 0)
+				box.BackgroundTransparency = 1
+				box.PlaceholderText       = ph
+				box.PlaceholderColor3     = theme.SubText
+				box.Text                  = def
+				box.Font                  = Enum.Font.Gotham
+				box.TextSize              = 12
+				box.TextColor3            = theme.Text
+				box.ClearTextOnFocus      = false
+				box.Parent                = ibg
+
+				box.Focused:Connect(function()
+					tw(ibg, {BackgroundColor3 = theme.ElementHover}, 0.1)
+					ibgS.Color = theme.Accent; ibgS.Thickness = 1.5
+				end)
+				box.FocusLost:Connect(function()
+					tw(ibg, {BackgroundColor3 = theme.TabBar}, 0.1)
+					ibgS.Color = theme.Border; ibgS.Thickness = 1
+				end)
+				box:GetPropertyChangedSignal("Text"):Connect(function()
+					if flag then getgenv()[flag] = box.Text end
+					task.spawn(cb, box.Text)
+				end)
+
+				local IN = {}
+				function IN:Set(v) box.Text = v; if flag then getgenv()[flag] = v end end
+				function IN:Get() return box.Text end
+				if flag then getgenv()[flag] = def end
+				table.insert(allElements, {frame = e, label = lbl})
+				return IN
+			end
+
+			-- ── TABLE (key/value stat display) ──────────────────────
+			function S:AddTable(o)
+				o = o or {}
+				local lbl  = o.Name or "Table"
+				local rows = o.Rows or {}
+
+				local cont              = Instance.new("Frame")
+				cont.Name               = "Tbl_" .. lbl
+				cont.Size               = UDim2.new(1, 0, 0, 0)
+				cont.AutomaticSize      = Enum.AutomaticSize.Y
+				cont.BackgroundColor3   = theme.Element
+				cont.LayoutOrder        = nlo()
+				cont.Parent             = si
+				corner(cont, 7)
+				stroke(cont, theme.Border, 1)
+				pad(cont, 8, 10, 8, 10)
+
+				local innerT            = Instance.new("Frame")
+				innerT.Size             = UDim2.new(1, 0, 1, 0)
+				innerT.AutomaticSize    = Enum.AutomaticSize.Y
+				innerT.BackgroundTransparency = 1
+				innerT.Parent           = cont
+				list(innerT, Enum.FillDirection.Vertical, 2)
+
+				local rowFrames = {}
+
+				local function buildRows()
+					for _, rf in ipairs(rowFrames) do rf:Destroy() end
+					rowFrames = {}
+					for i, row in ipairs(rows) do
+						local rf              = Instance.new("Frame")
+						rf.Size               = UDim2.new(1, 0, 0, 24)
+						rf.BackgroundColor3   = i % 2 == 0 and theme.TabBar or theme.Element
+						rf.BackgroundTransparency = 0.4
+						rf.Parent             = innerT
+						corner(rf, 4)
+
+						local kl              = Instance.new("TextLabel")
+						kl.Size               = UDim2.new(0.5, -4, 1, 0)
+						kl.Position           = UDim2.new(0, 8, 0, 0)
+						kl.BackgroundTransparency = 1
+						kl.Text               = tostring(row[1] or "")
+						kl.Font               = Enum.Font.GothamSemibold
+						kl.TextSize           = 12
+						kl.TextColor3         = theme.SubText
+						kl.TextXAlignment     = Enum.TextXAlignment.Left
+						kl.Parent             = rf
+
+						local vl              = Instance.new("TextLabel")
+						vl.Size               = UDim2.new(0.5, -4, 1, 0)
+						vl.Position           = UDim2.new(0.5, 4, 0, 0)
+						vl.BackgroundTransparency = 1
+						vl.Text               = tostring(row[2] or "")
+						vl.Font               = Enum.Font.GothamBold
+						vl.TextSize           = 12
+						vl.TextColor3         = theme.Text
+						vl.TextXAlignment     = Enum.TextXAlignment.Left
+						vl.Parent             = rf
+
+						table.insert(rowFrames, rf)
+					end
+				end
+				buildRows()
+
+				local TB2 = {}
+				function TB2:SetRows(r) rows = r; buildRows() end
+				function TB2:UpdateRow(i, key, val)
+					if rows[i] then rows[i] = {key, val}; buildRows() end
+				end
+				return TB2
+			end
+
+			-- ── SECTION CONTROL ─────────────────────────────────────
+			function S:SetVisible(v)
+				sf.Visible = v
+			end
+
+			function S:Destroy()
+				sf:Destroy()
 			end
 
 			return S
