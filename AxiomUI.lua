@@ -1,7 +1,5 @@
 -- ============================================================
---  AXIOM UI LIBRARY  •  Executor Edition  •  v2.0
---  Paste into any executor. No require(). No ModuleScript.
---  getgenv().AxiomUI holds the library after first load.
+--  AXIOM UI LIBRARY  •  Executor Edition  •  v4.2
 -- ============================================================
 
 if getgenv().AxiomUI then
@@ -155,6 +153,7 @@ local function list(p, dir, spacing, ha)
 end
 
 local function ripple(parent, theme)
+	if not parent or not parent.Parent then return end
 	local r = Instance.new("Frame")
 	r.Size                   = UDim2.new(0, 0, 0, 0)
 	r.Position               = UDim2.new(0.5, 0, 0.5, 0)
@@ -165,24 +164,34 @@ local function ripple(parent, theme)
 	r.Parent                 = parent
 	corner(r, 100)
 	tw(r, {Size = UDim2.new(2, 0, 2, 0), BackgroundTransparency = 1}, 0.45)
-	task.delay(0.45, function() if r then r:Destroy() end end)
+	task.delay(0.45, function() if r and r.Parent then r:Destroy() end end)
 end
 
 -- ── DRAG ─────────────────────────────────────────────────────
-local function makeDraggable(root, handle)
+-- connTable (optional): caller-owned array; every RBXScriptConnection this
+-- function makes gets pushed there so the caller can tear them down on destroy.
+local function makeDraggable(root, handle, connTable)
 	local drag, start, origin = false, nil, nil
-	handle.InputBegan:Connect(function(i)
+	local changedConn = nil
+
+	local function push(c)
+		if connTable then table.insert(connTable, c) end
+		return c
+	end
+
+	push(handle.InputBegan:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1
 		or i.UserInputType == Enum.UserInputType.Touch then
 			drag   = true
 			start  = i.Position
 			origin = root.Position
-			i.Changed:Connect(function()
+			if changedConn then changedConn:Disconnect() end
+			changedConn = push(i.Changed:Connect(function()
 				if i.UserInputState == Enum.UserInputState.End then drag = false end
-			end)
+			end))
 		end
-	end)
-	UserInputService.InputChanged:Connect(function(i)
+	end))
+	push(UserInputService.InputChanged:Connect(function(i)
 		if drag and (i.UserInputType == Enum.UserInputType.MouseMovement
 		          or i.UserInputType == Enum.UserInputType.Touch) then
 			local d = i.Position - start
@@ -190,7 +199,7 @@ local function makeDraggable(root, handle)
 				origin.X.Scale, origin.X.Offset + d.X,
 				origin.Y.Scale, origin.Y.Offset + d.Y)
 		end
-	end)
+	end))
 end
 
 -- ── NOTIFY SYSTEM ─────────────────────────────────────────────
@@ -507,7 +516,11 @@ function AxiomUI:CreateWindow(opts)
 		task.delay(0.25, function() sg:Destroy() end)
 	end)
 
-	makeDraggable(win, topbar)
+	-- every long-lived RBXScriptConnection (sliders, color pickers, drag) lives
+	-- here so Destroy() can actually kill them instead of leaking them
+	local _winConnections = {}
+
+	makeDraggable(win, topbar, _winConnections)
 
 	-- Toggle key
 	if _keybindConn then _keybindConn:Disconnect() end
@@ -594,6 +607,11 @@ function AxiomUI:CreateWindow(opts)
 	end
 
 	function Window:Destroy()
+		if _keybindConn then _keybindConn:Disconnect(); _keybindConn = nil end
+		for _, c in ipairs(_winConnections) do
+			pcall(function() c:Disconnect() end)
+		end
+		_winConnections = {}
 		sg:Destroy()
 		-- Only destroy the shared notify layer if no other AxiomUI windows remain
 		local remaining = 0
@@ -1213,17 +1231,17 @@ function AxiomUI:CreateWindow(opts)
 					task.spawn(cb, v)
 				end
 
-				tr.InputBegan:Connect(function(i)
+				table.insert(_winConnections, tr.InputBegan:Connect(function(i)
 					if i.UserInputType == Enum.UserInputType.MouseButton1 then
 						dragging = true; upd(i)
 					end
-				end)
-				UserInputService.InputChanged:Connect(function(i)
+				end))
+				table.insert(_winConnections, UserInputService.InputChanged:Connect(function(i)
 					if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then upd(i) end
-				end)
-				UserInputService.InputEnded:Connect(function(i)
+				end))
+				table.insert(_winConnections, UserInputService.InputEnded:Connect(function(i)
 					if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
-				end)
+				end))
 
 				local Sl = {}
 				function Sl:Set(val)
@@ -1766,18 +1784,18 @@ function AxiomUI:CreateWindow(opts)
 				local svDrag = false
 				local hueDrag = false
 
-				svField.InputBegan:Connect(function(i)
+				table.insert(_winConnections, svField.InputBegan:Connect(function(i)
 					if i.UserInputType == Enum.UserInputType.MouseButton1 then svDrag = true end
-				end)
-				hueBar.InputBegan:Connect(function(i)
+				end))
+				table.insert(_winConnections, hueBar.InputBegan:Connect(function(i)
 					if i.UserInputType == Enum.UserInputType.MouseButton1 then hueDrag = true end
-				end)
-				UserInputService.InputEnded:Connect(function(i)
+				end))
+				table.insert(_winConnections, UserInputService.InputEnded:Connect(function(i)
 					if i.UserInputType == Enum.UserInputType.MouseButton1 then
 						svDrag = false; hueDrag = false
 					end
-				end)
-				UserInputService.InputChanged:Connect(function(i)
+				end))
+				table.insert(_winConnections, UserInputService.InputChanged:Connect(function(i)
 					if i.UserInputType ~= Enum.UserInputType.MouseMovement then return end
 					if svDrag then
 						Sa = math.clamp((i.Position.X - svField.AbsolutePosition.X) / svField.AbsoluteSize.X, 0, 1)
@@ -1787,7 +1805,7 @@ function AxiomUI:CreateWindow(opts)
 						H  = math.clamp((i.Position.X - hueBar.AbsolutePosition.X) / hueBar.AbsoluteSize.X, 0, 1)
 						applyColor()
 					end
-				end)
+				end))
 
 				hexBox.FocusLost:Connect(function()
 					local hex = hexBox.Text:gsub("#", "")
