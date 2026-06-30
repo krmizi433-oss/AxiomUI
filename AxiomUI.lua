@@ -293,8 +293,8 @@ local function _showNotif(opts, theme)
 	task.delay(duration, function()
 		tw(frame, {BackgroundTransparency = 1}, 0.25)
 		task.delay(0.3, function()
-			if frame then frame:Destroy() end
-			_notifyActive -= 1
+			pcall(function() if frame and frame.Parent then frame:Destroy() end end)
+			_notifyActive = math.max(0, _notifyActive - 1)
 			if #_notifyQueue > 0 then
 				local nxt = table.remove(_notifyQueue, 1)
 				_showNotif(nxt.opts, nxt.theme)
@@ -565,15 +565,20 @@ function AxiomUI:CreateWindow(opts)
 	local activeBtn    = nil
 
 	-- Search filter: hide/show elements by label text
-	local allElements  = {} -- {frame, labelText}
+	local allElements  = {} -- {frame, labelText, page}
 
 	searchBox:GetPropertyChangedSignal("Text"):Connect(function()
 		local q = searchBox.Text:lower()
 		for _, e in ipairs(allElements) do
-			if q == "" then
-				e.frame.Visible = true
-			else
-				e.frame.Visible = e.label:lower():find(q, 1, true) ~= nil
+			-- Only touch elements belonging to the currently active tab's page —
+			-- otherwise clearing the search pops hidden-tab elements visible
+			-- and they bleed through once that tab is switched to.
+			if not activeTab or e.page == activeTab._page then
+				if q == "" then
+					e.frame.Visible = true
+				else
+					e.frame.Visible = e.label:lower():find(q, 1, true) ~= nil
+				end
 			end
 		end
 	end)
@@ -590,7 +595,18 @@ function AxiomUI:CreateWindow(opts)
 
 	function Window:Destroy()
 		sg:Destroy()
-		if _notifySg then _notifySg:Destroy() end
+		-- Only destroy the shared notify layer if no other AxiomUI windows remain
+		local remaining = 0
+		for _, child in ipairs(GUI_PARENT:GetChildren()) do
+			if child.Name:find("^AxiomUI_") and child ~= sg then
+				remaining += 1
+			end
+		end
+		if remaining == 0 and _notifySg then
+			pcall(function() _notifySg:Destroy() end)
+			_notifySg   = nil
+			_notifyCont = nil
+		end
 	end
 
 	function Window:SetTheme(name)
@@ -643,7 +659,7 @@ function AxiomUI:CreateWindow(opts)
 			if reg.flag and data[reg.flag] ~= nil then
 				local v = data[reg.flag]
 				if type(v) == "table" and v.r then
-					v = Color3.fromRGB(v.r * 255, v.g * 255, v.b * 255)
+					v = Color3.new(v.r, v.g, v.b)
 				end
 				if reg.obj and reg.obj.Set then reg.obj:Set(v) end
 			end
@@ -691,16 +707,20 @@ function AxiomUI:CreateWindow(opts)
 		wmLbl.Parent               = wmFrame
 
 		-- FPS counter update
+		local _fpsConn = nil
 		if opts.ShowFPS then
-			RunService.Heartbeat:Connect(function()
-				local fps = math.floor(1 / RunService.Heartbeat:Wait() + 0.5)
+			_fpsConn = RunService.Heartbeat:Connect(function(dt)
+				local fps = math.floor(1 / dt + 0.5)
 				wmLbl.Text = wText .. "  |  " .. fps .. " FPS"
 			end)
 		end
 
 		local WM = {}
 		function WM:SetText(t) wText = t; wmLbl.Text = t end
-		function WM:Destroy() wmSg:Destroy() end
+		function WM:Destroy()
+			if _fpsConn then _fpsConn:Disconnect(); _fpsConn = nil end
+			wmSg:Destroy()
+		end
 		return WM
 	end
 
@@ -810,6 +830,7 @@ function AxiomUI:CreateWindow(opts)
 			end
 			ripple(tBtn, theme)
 		end
+		Tab._activate = activate
 
 		tBtn.MouseButton1Click:Connect(activate)
 		tBtn.MouseEnter:Connect(function()
@@ -825,14 +846,30 @@ function AxiomUI:CreateWindow(opts)
 		function Tab:SetVisible(v)
 			tBtn.Visible = v
 			if not v and activeTab == Tab then
+				-- Closing the active tab — hand off to the first remaining
+				-- visible tab using its own activate(), so the indicator,
+				-- text color, and tab-button highlight all update correctly
+				-- instead of just flipping page.Visible with stale styling.
+				local fallback = nil
 				for _, t in ipairs(tabs) do
 					if t ~= Tab and t._page then
-						t._page.Visible = true
-						activeTab = t
-						break
+						-- find its button to confirm it's actually visible
+						for _, btn in ipairs(tabScroll:GetChildren()) do
+							if btn:IsA("TextButton") and btn.Name == "Tab_" .. (t._page.Name:gsub("^Page_", "")) and btn.Visible then
+								fallback = t
+								break
+							end
+						end
 					end
+					if fallback then break end
 				end
-				page.Visible = false
+				if fallback and fallback._activate then
+					fallback._activate()
+				else
+					page.Visible = false
+					activeTab = nil
+					activeBtn = nil
+				end
 			end
 		end
 
@@ -979,7 +1016,7 @@ function AxiomUI:CreateWindow(opts)
 					task.spawn(cb)
 				end)
 
-				table.insert(allElements, {frame = e, label = lbl})
+				table.insert(allElements, {frame = e, label = lbl, page = page})
 				return e
 			end
 
@@ -1066,8 +1103,11 @@ function AxiomUI:CreateWindow(opts)
 				function T:Set(v) set(v) end
 				function T:Get() return state end
 
-				if flag then getgenv()[flag] = state end
-				table.insert(allElements, {frame = e, label = lbl})
+				if flag then
+					getgenv()[flag] = state
+					table.insert(_flagRegistry, {flag = flag, obj = T, default = def})
+				end
+				table.insert(allElements, {frame = e, label = lbl, page = page})
 				return T
 			end
 
@@ -1138,7 +1178,7 @@ function AxiomUI:CreateWindow(opts)
 				tr.Size                   = UDim2.new(1, 0, 0, 6)
 				tr.Position               = UDim2.new(0, 0, 1, -14)
 				tr.BackgroundColor3       = theme.SliderBg
-				tr.ClipsDescendants       = true
+				tr.ClipsDescendants       = false
 				tr.Parent                 = e
 				corner(tr, 100)
 
@@ -1196,8 +1236,11 @@ function AxiomUI:CreateWindow(opts)
 				end
 				function Sl:Get() return v end
 
-				if flag then getgenv()[flag] = v end
-				table.insert(allElements, {frame = e, label = lbl})
+				if flag then
+					getgenv()[flag] = v
+					table.insert(_flagRegistry, {flag = flag, obj = Sl, default = def})
+				end
+				table.insert(allElements, {frame = e, label = lbl, page = page})
 				return Sl
 			end
 
@@ -1265,17 +1308,27 @@ function AxiomUI:CreateWindow(opts)
 				chev.ZIndex             = 6
 				chev.Parent             = hdr
 
+				-- Parented to sg directly, not cont — cont sits inside the
+				-- ScrollingFrame page, which clips anything that overflows
+				-- it. Reparenting to the ScreenGui escapes that clip and the
+				-- list no longer gets cut off near the bottom of a tab.
 				local lst               = Instance.new("Frame")
-				lst.Name                = "List"
-				lst.Size                = UDim2.new(1, 0, 0, 0)
-				lst.Position            = UDim2.new(0, 0, 1, 4)
+				lst.Name                = "List_" .. lbl
+				lst.Size                = UDim2.new(0, 0, 0, 0)
 				lst.BackgroundColor3    = theme.TabBar
 				lst.ClipsDescendants    = true
-				lst.ZIndex              = 12
+				lst.ZIndex              = 50
 				lst.Visible             = false
-				lst.Parent              = cont
+				lst.Parent              = sg
 				corner(lst, 8)
 				stroke(lst, theme.Border, 1)
+
+				local function syncListPosition()
+					lst.Position = UDim2.new(
+						0, cont.AbsolutePosition.X - win.AbsolutePosition.X,
+						0, cont.AbsolutePosition.Y - win.AbsolutePosition.Y + cont.AbsoluteSize.Y + 4)
+					lst.Size = UDim2.new(0, cont.AbsoluteSize.X, lst.Size.Y.Scale, lst.Size.Y.Offset)
+				end
 
 				local li                = Instance.new("Frame")
 				li.Size                 = UDim2.new(1, 0, 1, 0)
@@ -1285,6 +1338,8 @@ function AxiomUI:CreateWindow(opts)
 				li.Parent               = lst
 				pad(li, 4, 4, 4, 4)
 				list(li, Enum.FillDirection.Vertical, 2)
+
+				local _ddScrollConn = nil
 
 				local function rebuild()
 					for _, c in ipairs(li:GetChildren()) do
@@ -1312,12 +1367,17 @@ function AxiomUI:CreateWindow(opts)
 						end)
 						ob.MouseButton1Click:Connect(function()
 							if multi then
-								selected[opt] = not selected[opt] or nil
+								if selected[opt] then
+									selected[opt] = nil
+								else
+									selected[opt] = true
+								end
 							else
 								selected = opt
 								open = false
-								tw(lst, {Size = UDim2.new(1, 0, 0, 0)}, 0.15)
+								tw(lst, {Size = UDim2.new(0, cont.AbsoluteSize.X, 0, 0)}, 0.15)
 								tw(chev, {Rotation = 0}, 0.15)
+								if _ddScrollConn then _ddScrollConn:Disconnect(); _ddScrollConn = nil end
 								task.delay(0.15, function() lst.Visible = false end)
 							end
 							hl.Text = lbl .. ":  " .. selText()
@@ -1333,13 +1393,19 @@ function AxiomUI:CreateWindow(opts)
 					open = not open
 					if open then
 						local h = math.min(#opts * 30 + 8, 180)
+						syncListPosition()
 						lst.Visible = true
-						lst.Size = UDim2.new(1, 0, 0, 0)
-						tw(lst, {Size = UDim2.new(1, 0, 0, h)}, 0.2)
+						lst.Size = UDim2.new(0, cont.AbsoluteSize.X, 0, 0)
+						tw(lst, {Size = UDim2.new(0, cont.AbsoluteSize.X, 0, h)}, 0.2)
 						tw(chev, {Rotation = 180}, 0.2)
+						-- Page is scrollable — keep the floating list pinned
+						-- under cont while open, instead of drifting off
+						-- once the user scrolls the tab.
+						_ddScrollConn = RunService.Heartbeat:Connect(syncListPosition)
 					else
-						tw(lst, {Size = UDim2.new(1, 0, 0, 0)}, 0.15)
+						tw(lst, {Size = UDim2.new(0, cont.AbsoluteSize.X, 0, 0)}, 0.15)
 						tw(chev, {Rotation = 0}, 0.15)
+						if _ddScrollConn then _ddScrollConn:Disconnect(); _ddScrollConn = nil end
 						task.delay(0.15, function() lst.Visible = false end)
 					end
 				end)
@@ -1355,8 +1421,16 @@ function AxiomUI:CreateWindow(opts)
 					for i, v in ipairs(opts) do if v == opt then table.remove(opts, i); break end end
 					rebuild()
 				end
-				if flag then getgenv()[flag] = selected end
-				table.insert(allElements, {frame = cont, label = lbl})
+				if flag then
+					getgenv()[flag] = selected
+					table.insert(_flagRegistry, {flag = flag, obj = D, default = def})
+				end
+				table.insert(allElements, {frame = cont, label = lbl, page = page})
+				-- lst lives under sg now, not cont — destroying the section
+				-- frame won't clean it up, so wire it to the page's removal.
+				page.AncestryChanged:Connect(function(_, parent)
+					if not parent then lst:Destroy() end
+				end)
 				return D
 			end
 
@@ -1427,8 +1501,11 @@ function AxiomUI:CreateWindow(opts)
 				local TB = {}
 				function TB:Set(v) box.Text = v; if flag then getgenv()[flag] = v end end
 				function TB:Get() return box.Text end
-				if flag then getgenv()[flag] = def end
-				table.insert(allElements, {frame = e, label = lbl})
+				if flag then
+					getgenv()[flag] = def
+					table.insert(_flagRegistry, {flag = flag, obj = TB, default = def})
+				end
+				table.insert(allElements, {frame = e, label = lbl, page = page})
 				return TB
 			end
 
@@ -1485,19 +1562,29 @@ function AxiomUI:CreateWindow(opts)
 				UserInputService.InputBegan:Connect(function(i, gp)
 					if not listening then return end
 					if i.UserInputType == Enum.UserInputType.Keyboard then
-						binding        = i.KeyCode
-						listening      = false
-						kbBtn.Text     = binding.Name
+						binding          = i.KeyCode
+						listening        = false
+						local justBound  = true
+						kbBtn.Text       = binding.Name
 						kbBtn.TextColor3 = theme.Accent
 						if flag then getgenv()[flag] = binding end
 						task.spawn(cb, binding)
+						task.defer(function() justBound = false end)
+						-- store justBound so the fire-handler can see it
+						-- (closure shares the upvalue)
 					end
 				end)
 
-				-- Fire callback when key pressed (not just bound)
+				-- Fire callback when key pressed (not just bound).
+				-- justBound is declared in the outer bind-handler closure and
+				-- stays true for one deferred frame after rebinding, preventing
+				-- the newly assigned key from double-firing on the bind frame.
+				local justBound = false
 				UserInputService.InputBegan:Connect(function(i, gp)
 					if gp then return end
-					if not listening and i.KeyCode == binding then
+					if listening then return end
+					if justBound then return end
+					if i.KeyCode == binding then
 						task.spawn(cb, binding)
 					end
 				end)
@@ -1505,8 +1592,11 @@ function AxiomUI:CreateWindow(opts)
 				local KB = {}
 				function KB:Set(key) binding = key; kbBtn.Text = key.Name end
 				function KB:Get() return binding end
-				if flag then getgenv()[flag] = def end
-				table.insert(allElements, {frame = e, label = lbl})
+				if flag then
+					getgenv()[flag] = def
+					table.insert(_flagRegistry, {flag = flag, obj = KB, default = def})
+				end
+				table.insert(allElements, {frame = e, label = lbl, page = page})
 				return KB
 			end
 
@@ -1556,19 +1646,27 @@ function AxiomUI:CreateWindow(opts)
 				corner(swatch, 5)
 				stroke(swatch, theme.Border, 1)
 
-				-- Picker popup
+				-- Picker popup — parented to sg, not cont. cont sits inside
+				-- the ScrollingFrame page, so anything anchored to it gets
+				-- clipped the moment it overflows the page bounds.
 				local popup             = Instance.new("Frame")
-				popup.Name              = "Picker"
+				popup.Name              = "Picker_" .. lbl
 				popup.Size              = UDim2.new(0, 200, 0, 190)
-				popup.Position          = UDim2.new(0, -4, 1, 6)
 				popup.BackgroundColor3  = theme.Section
 				popup.Visible           = false
-				popup.ZIndex            = 20
+				popup.ZIndex            = 50
 				popup.ClipsDescendants  = true
-				popup.Parent            = cont
+				popup.Parent            = sg
 				corner(popup, 10)
 				stroke(popup, theme.Border, 1.5)
 				pad(popup, 8, 8, 8, 8)
+
+				local _cpScrollConn = nil
+				local function syncPopupPosition()
+					popup.Position = UDim2.new(
+						0, cont.AbsolutePosition.X - win.AbsolutePosition.X - 4,
+						0, cont.AbsolutePosition.Y - win.AbsolutePosition.Y + cont.AbsoluteSize.Y + 6)
+				end
 
 				-- SV gradient field
 				local svField           = Instance.new("ImageLabel")
@@ -1594,7 +1692,7 @@ function AxiomUI:CreateWindow(opts)
 				local hueBar            = Instance.new("ImageLabel")
 				hueBar.Size             = UDim2.new(1, 0, 0, 16)
 				hueBar.Position         = UDim2.new(0, 0, 0, 118)
-				hueBar.Image            = "rbxassetid://6020299385"
+				hueBar.Image            = ""
 				hueBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 				-- Use a hue gradient via UIGradient
 				hueBar.ZIndex           = 21
@@ -1707,8 +1805,16 @@ function AxiomUI:CreateWindow(opts)
 
 				swatch.MouseButton1Click:Connect(function()
 					pickerOpen = not pickerOpen
+					if pickerOpen then
+						syncPopupPosition()
+						hexBox.Text = colorToHex(currentColor)
+						-- Page scrolls independently of the floating popup —
+						-- keep it pinned under the swatch while open.
+						_cpScrollConn = RunService.Heartbeat:Connect(syncPopupPosition)
+					elseif _cpScrollConn then
+						_cpScrollConn:Disconnect(); _cpScrollConn = nil
+					end
 					popup.Visible = pickerOpen
-					if pickerOpen then hexBox.Text = colorToHex(currentColor) end
 				end)
 
 				applyColor()
@@ -1718,8 +1824,16 @@ function AxiomUI:CreateWindow(opts)
 					currentColor = c; H, Sa, V_ = c:ToHSV(); applyColor()
 				end
 				function CP:Get() return currentColor end
-				if flag then getgenv()[flag] = def end
-				table.insert(allElements, {frame = cont, label = lbl})
+				if flag then
+					getgenv()[flag] = def
+					table.insert(_flagRegistry, {flag = flag, obj = CP, default = def})
+				end
+				table.insert(allElements, {frame = cont, label = lbl, page = page})
+				-- popup lives under sg now — wire its cleanup to the page,
+				-- same pattern as the dropdown's floating list.
+				page.AncestryChanged:Connect(function(_, parent)
+					if not parent then popup:Destroy() end
+				end)
 				return CP
 			end
 
@@ -1882,8 +1996,11 @@ function AxiomUI:CreateWindow(opts)
 					if flag then getgenv()[flag] = pv end
 				end
 				function PB:Get() return pv end
-				if flag then getgenv()[flag] = pv end
-				table.insert(allElements, {frame = e, label = lbl})
+				if flag then
+					getgenv()[flag] = pv
+					table.insert(_flagRegistry, {flag = flag, obj = PB, default = def})
+				end
+				table.insert(allElements, {frame = e, label = lbl, page = page})
 				return PB
 			end
 
@@ -1953,8 +2070,11 @@ function AxiomUI:CreateWindow(opts)
 				local IN = {}
 				function IN:Set(v) box.Text = v; if flag then getgenv()[flag] = v end end
 				function IN:Get() return box.Text end
-				if flag then getgenv()[flag] = def end
-				table.insert(allElements, {frame = e, label = lbl})
+				if flag then
+					getgenv()[flag] = def
+					table.insert(_flagRegistry, {flag = flag, obj = IN, default = def})
+				end
+				table.insert(allElements, {frame = e, label = lbl, page = page})
 				return IN
 			end
 
