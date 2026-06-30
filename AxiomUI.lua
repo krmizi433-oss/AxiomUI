@@ -1,5 +1,5 @@
 -- ============================================================
---  AXIOM UI LIBRARY  •  Executor Edition  •  v4.2
+--  AXIOM UI LIBRARY  •  Executor Edition  •  v4
 -- ============================================================
 
 if getgenv().AxiomUI then
